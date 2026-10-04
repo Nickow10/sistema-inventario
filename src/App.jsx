@@ -1,23 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-
-const STORAGE_KEY = "inventario-productos";
-
-const seed = [
-  { id: "1", nombre: "Cable HDMI 2m", sku: "CAB-001", stock: 24, minimo: 10 },
-  { id: "2", nombre: "Mouse inalámbrico", sku: "MOU-014", stock: 4, minimo: 8 },
-];
-
-function loadProducts() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : seed;
-  } catch {
-    return seed;
-  }
-}
+import { supabase } from "./supabase";
 
 export default function App() {
-  const [productos, setProductos] = useState(loadProducts);
+  const [productos, setProductos] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState("");
   const [nombre, setNombre] = useState("");
   const [sku, setSku] = useState("");
   const [stock, setStock] = useState("0");
@@ -25,8 +12,30 @@ export default function App() {
   const [busqueda, setBusqueda] = useState("");
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(productos));
-  }, [productos]);
+    let activo = true;
+
+    async function cargar() {
+      const { data, error: err } = await supabase
+        .from("productos")
+        .select("id, nombre, sku, stock, minimo")
+        .order("nombre");
+
+      if (!activo) return;
+      if (err) {
+        setError(err.message);
+        setProductos([]);
+      } else {
+        setError("");
+        setProductos(data ?? []);
+      }
+      setCargando(false);
+    }
+
+    cargar();
+    return () => {
+      activo = false;
+    };
+  }, []);
 
   const filtrados = useMemo(() => {
     const q = busqueda.trim().toLowerCase();
@@ -37,38 +46,67 @@ export default function App() {
     );
   }, [productos, busqueda]);
 
-  function agregar(e) {
+  async function agregar(e) {
     e.preventDefault();
     const n = nombre.trim();
     const s = sku.trim().toUpperCase();
     if (!n || !s) return;
     if (productos.some((p) => p.sku === s)) return;
 
-    setProductos((prev) => [
-      {
-        id: crypto.randomUUID(),
-        nombre: n,
-        sku: s,
-        stock: Math.max(0, Number(stock) || 0),
-        minimo: Math.max(0, Number(minimo) || 0),
-      },
-      ...prev,
-    ]);
+    const row = {
+      nombre: n,
+      sku: s,
+      stock: Math.max(0, Number(stock) || 0),
+      minimo: Math.max(0, Number(minimo) || 0),
+    };
+
+    const { data, error: err } = await supabase
+      .from("productos")
+      .insert(row)
+      .select("id, nombre, sku, stock, minimo")
+      .single();
+
+    if (err) {
+      setError(err.message);
+      return;
+    }
+
+    setError("");
+    setProductos((prev) => [data, ...prev]);
     setNombre("");
     setSku("");
     setStock("0");
     setMinimo("5");
   }
 
-  function cambiarStock(id, delta) {
+  async function cambiarStock(id, delta) {
+    const actual = productos.find((p) => p.id === id);
+    if (!actual) return;
+    const stock = Math.max(0, actual.stock + delta);
+
+    const { error: err } = await supabase
+      .from("productos")
+      .update({ stock })
+      .eq("id", id);
+
+    if (err) {
+      setError(err.message);
+      return;
+    }
+
+    setError("");
     setProductos((prev) =>
-      prev.map((p) =>
-        p.id === id ? { ...p, stock: Math.max(0, p.stock + delta) } : p
-      )
+      prev.map((p) => (p.id === id ? { ...p, stock } : p))
     );
   }
 
-  function eliminar(id) {
+  async function eliminar(id) {
+    const { error: err } = await supabase.from("productos").delete().eq("id", id);
+    if (err) {
+      setError(err.message);
+      return;
+    }
+    setError("");
     setProductos((prev) => prev.filter((p) => p.id !== id));
   }
 
@@ -81,8 +119,13 @@ export default function App() {
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">Inventario</h1>
             <p className="text-sm text-slate-400">
-              {productos.length} productos · {bajos} con stock bajo
+              {cargando
+                ? "Cargando…"
+                : `${productos.length} productos · ${bajos} con stock bajo`}
             </p>
+            {error ? (
+              <p className="mt-1 text-sm text-rose-400">{error}</p>
+            ) : null}
           </div>
           <input
             className="w-full max-w-xs rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-emerald-500"
@@ -154,7 +197,13 @@ export default function App() {
               </tr>
             </thead>
             <tbody>
-              {filtrados.length === 0 ? (
+              {cargando ? (
+                <tr>
+                  <td colSpan={4} className="px-4 py-8 text-center text-slate-500">
+                    Cargando productos…
+                  </td>
+                </tr>
+              ) : filtrados.length === 0 ? (
                 <tr>
                   <td colSpan={4} className="px-4 py-8 text-center text-slate-500">
                     Sin productos
